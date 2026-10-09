@@ -10,22 +10,22 @@ OUTPUT_CSV = Path("C:\\augustine\\diffdock_csv\\test.csv")
 
 def build_csv(protein_dir, ligand_dir, output_csv):
     data = {
-            'Complex_Name': [],
-            'Protein_Path': [],
-            'Ligand_Path': []
+            'complex_name': [],
+            'protein_path': [],
+            'ligand_description': [],
+            'protein_sequence': []
         }
     ligand_path = Path(ligand_dir)
     for ligand in ligand_path.iterdir():
         complex_name = f"{protein_dir.stem}_{ligand.stem}"
-        data['Complex_Name'].append(complex_name)
-        data['Ligand_Path'].append(str(ligand))
-        data['Protein_Path'].append(str(protein_dir))
-    
+        data['complex_name'].append(complex_name)
+        data['ligand_description'].append(str(ligand))
+        data['protein_path'].append(str(protein_dir))
+        data['protein_sequence'].append("")
 
     df = pd.DataFrame(data)
     df.to_csv(output_csv, index=False)
 
 build_csv(PROTEIN_DIR, LIGAND_DIR, OUTPUT_CSV)
-
 
             
