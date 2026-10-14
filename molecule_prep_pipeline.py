@@ -5,7 +5,7 @@ from rdkit.Chem import AllChem
 # main function
 def main():
     #.smi file path
-    filepath = "C:\\augustine\\ligands\\raw_smiles_ligands\\test_ligands\\smiles_test_script.smi.txt"
+    filepath = "C:\\augustine\\data\\ligands\\raw_smiles_ligands\\test_ligands\\smiles_test_script.smi.txt"
     mol_from_file_path = supplierfunc(filepath)
     valid_mol = lipinskiverify(mol_from_file_path)
     converted_mol = conversionpipeline(valid_mol)
@@ -56,7 +56,11 @@ def lipinskiverify(selected_mols):
 def conversionpipeline(screened_mol):
     for mol in screened_mol:
 
+        Chem.SanitizeMol(mol)      
         mol_obj_H = Chem.AddHs(mol)
+        mol_obj_H.ClearComputedProps()
+        #Implementation to fix future bug with ring finding during UFF minimization
+        Chem.FastFindRings(mol_obj_H)
         status = AllChem.EmbedMolecule(mol_obj_H, AllChem.ETKDGv3())
         if status == 0:
             yield mol_obj_H
@@ -67,10 +71,10 @@ def conversionpipeline(screened_mol):
 
 def writingmolecule(prepared_mol):
     for mol in prepared_mol:
-        zinc_id = mol.GetProp("zinc_id") if mol.HasProp("zinc_id") else "unknown_id"
+        zinc_id = mol.GetProp("zinc_id") if mol.HasProp("zinc_id") else "unknown_id"  
 
         try:
-            out_path = fr"C:\augustine\ligands\converted_ligands\{zinc_id}.sdf"
+            out_path = fr"C:\augustine\data\ligands\converted_ligands\{zinc_id}.sdf"
             Chem.MolToMolFile(mol, out_path)
             print(f"{zinc_id} has been successfully saved as .sdf!")
         except Exception as e:
@@ -78,5 +82,7 @@ def writingmolecule(prepared_mol):
 
 if __name__ == "__main__":
     main()
+
+
 
 
