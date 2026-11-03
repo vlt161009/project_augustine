@@ -20,6 +20,10 @@ def lig_supplierfunc(file_path):
                 removeHs=False,
                 strictParsing=True
                 )
+        
+        ligand = lig_supplier[0]
+        for atom in ligand.GetAtoms():
+            atom.SetBoolProp("is_ligand", True)
         print(f"Found {len(lig_supplier)} molecules in {file}.")
         for mol in lig_supplier:
             if mol is not None:
@@ -105,3 +109,21 @@ def generate_lowest_eigenvector_tensor(combined_mol):
     lowest_eigenvector_tensor = torch.tensor(lowest_eigenvectors, dtype=torch.float)
 
     return lowest_eigenvector_tensor
+
+# Here we generate a tensor that is a boolean mask of each node, defining whether it is part of the ligand or the protein pocket. The ligand atoms are marked as 1, and the protein pocket atoms are marked as 0.
+def generate_graph_mask_tensor(combined_mol):
+    # Generate 3D coordinates if not present
+    if combined_mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(combined_mol)
+
+    graph_mask = []
+
+    for atom in combined_mol.GetAtoms():
+        if atom.GetBoolProp("is_ligand"):
+            graph_mask.append(1)
+        else:
+            graph_mask.append(0)
+
+    graph_mask_tensor = torch.tensor(graph_mask, dtype=torch.bool)
+    
+    return graph_mask_tensor
