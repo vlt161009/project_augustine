@@ -2,11 +2,14 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 import torch
 from pathlib import Path
+import numpy as np
+import scipy.sparse as sp
 
 LIG_FILE_PATH = "C:\\augustine\\data\\minimized\\minimized_lig"
 POCKET_FILE_PATH = "C:\\augustine\\data\\minimized\\truncated_pocket"
 
-atom_features = []
+atom_features_tensor = []
+pos = []
 
 # Initialize ligand supplier
 def lig_supplierfunc(file_path):
@@ -53,7 +56,7 @@ def generate_node_features_tensor_x(combined_mol):
 
     # Extract atom features
     for atom in combined_mol.GetAtoms():
-        atom_features.append([
+        atom_features_tensor.append([
             atom.GetAtomicNum(),
             atom.GetDegree(),
             atom.GetFormalCharge(),
@@ -61,7 +64,7 @@ def generate_node_features_tensor_x(combined_mol):
             atom.GetIsAromatic()
         ])
     
-    x = torch.tensor(atom_features, dtype=torch.float)
+    x = torch.tensor(atom_features_tensor, dtype=torch.float)
     return x
 
 def generate_3d_coord_tensor_pos(combined_mol):
@@ -70,7 +73,6 @@ def generate_3d_coord_tensor_pos(combined_mol):
         AllChem.EmbedMolecule(combined_mol)
 
     conf = combined_mol.GetConformer()
-    pos = []
     for atom in combined_mol.GetAtoms():
         pos.append(list(conf.GetAtomPosition(atom.GetIdx())))
     
@@ -79,4 +81,27 @@ def generate_3d_coord_tensor_pos(combined_mol):
 
 # Draws the edge index tensor for the combined molecules, edges are drawn between atoms that are within 5 angstroms of each other
 def generate_edge_index_tensor_edge_index(combined_mol):
-    
+    # Generate 3D coordinates if not present
+    if combined_mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(combined_mol)
+
+    conf = combined_mol.GetConformer()
+
+    edge_index_tensor = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
+
+    edge_index_tensor_torch = torch.tensor(edge_index_tensor, dtype=torch.long).t().contiguous()
+    return edge_index_tensor_torch
+
+# We generate the lowest 15 eigenvectors of the distance matrix & return them as a tensor, where each node has a 15-dimensional feature vector.
+def generate_lowest_eigenvector_tensor(combined_mol):
+    # Generate 3D coordinates if not present
+    if combined_mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(combined_mol)
+
+    conf = combined_mol.GetConformer()
+    distance_matrix = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
+    eigenvalues, eigenvectors = np.linalg.eigh(distance_matrix)
+    lowest_eigenvectors = eigenvectors[:, :15]
+    lowest_eigenvector_tensor = torch.tensor(lowest_eigenvectors, dtype=torch.float)
+
+    return lowest_eigenvector_tensor
