@@ -1,15 +1,14 @@
 from rdkit import Chem
 from rdkit.Chem import AllChem
 import torch
+from torch_geometric.data import Data
 from pathlib import Path
 import numpy as np
 import scipy.sparse as sp
 
 LIG_FILE_PATH = "C:\\augustine\\data\\minimized\\minimized_lig"
 POCKET_FILE_PATH = "C:\\augustine\\data\\minimized\\truncated_pocket"
-
-atom_features_tensor = []
-pos = []
+DATA_OBJ_SAVE_DIR = "C:\\augustine\\data\\experimental_ligpro_graph_data_obj"
 
 # Initialize ligand supplier
 def lig_supplierfunc(file_path):
@@ -51,13 +50,14 @@ def pocket_ligand_comb(pocket_supplier, lig_supplier):
     for pocket_name, pocket_mol in pocket_supplier:
         for ligand_name, ligand_mol in lig_supplier:
             pocket_mol_obj = Chem.CombineMols(pocket_mol, ligand_mol)
-            yield pocket_name, pocket_mol_obj, ligand_name, ligand_mol
+            yield pocket_name, pocket_mol_obj, ligand_name
 
 def generate_node_features_tensor_x(combined_mol):
     # Generate 3D coordinates if not present
     if combined_mol.GetNumConformers() == 0:
         AllChem.EmbedMolecule(combined_mol)
 
+    atom_features_tensor = []
     # Extract atom features
     for atom in combined_mol.GetAtoms():
         atom_features_tensor.append([
@@ -76,6 +76,7 @@ def generate_3d_coord_tensor_pos(combined_mol):
     if combined_mol.GetNumConformers() == 0:
         AllChem.EmbedMolecule(combined_mol)
 
+    pos = []
     conf = combined_mol.GetConformer()
     for atom in combined_mol.GetAtoms():
         pos.append(list(conf.GetAtomPosition(atom.GetIdx())))
@@ -127,3 +128,60 @@ def generate_graph_mask_tensor(combined_mol):
     graph_mask_tensor = torch.tensor(graph_mask, dtype=torch.bool)
     
     return graph_mask_tensor
+
+# This function will generate Geometric Scale Tensors, that hold the euclidean distances between each connected node in the graph.
+def generate_geometric_scale_tensor(combined_mol):
+    # Generate 3D coordinates if not present
+    if combined_mol.GetNumConformers() == 0:
+        AllChem.EmbedMolecule(combined_mol)
+
+    conf = combined_mol.GetConformer()
+    distance_matrix = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
+    
+    # Create a sparse matrix to hold the distances
+    sparse_distance_matrix = sp.csr_matrix(distance_matrix)
+    
+    # Convert the sparse matrix to a dense tensor
+    geometric_scale_tensor = torch.tensor(sparse_distance_matrix.todense(), dtype=torch.float)
+    
+    return geometric_scale_tensor
+
+# This tensor will hold the regression target values for each target pic50 score for each mprotease(4YLU, 6LU7, 8C9P, 8D4N, 8E25, 8H5P, 9AUK, 9G0H, 23MB).
+def generate_regression_target_tensor(target_values):
+    # This script is for the generation of regression target tensors for the pic50 scores of unknown ligands against the different protease mutations. Because there is no data on the experimental group, we will fill the missing data with NaN values. The tensor will be of shape (num_samples, 1).
+    if len(target_values) == 0:
+        regression_target_tensor = torch.tensor([float('nan')], dtype=torch.float)
+    else:
+        regression_target_tensor = torch.tensor(target_values, dtype=torch.float).unsqueeze(1)
+    
+    return regression_target_tensor
+
+def main():
+    lig_supplier = lig_supplierfunc(LIG_FILE_PATH)
+    pocket_supplier = pocket_supplierfunc(POCKET_FILE_PATH)
+
+    for pocket_name, combined_mol, ligand_name in pocket_ligand_comb(pocket_supplier, lig_supplier):
+        x = generate_node_features_tensor_x(combined_mol)
+        pos = generate_3d_coord_tensor_pos(combined_mol)
+        edge_index = generate_edge_index_tensor_edge_index(combined_mol)
+        lowest_eigenvector = generate_lowest_eigenvector_tensor(combined_mol)
+        graph_mask = generate_graph_mask_tensor(combined_mol)
+        geometric_scale = generate_geometric_scale_tensor(combined_mol)
+        y = generate_regression_target_tensor([])  # Placeholder for actual target values
+
+    data = Data(
+        x=x,
+        pos=pos,
+        edge_index=edge_index,
+        lowest_eigenvector=lowest_eigenvector,
+        graph_mask=graph_mask,
+        geometric_scale=geometric_scale,
+        y=y
+    )
+
+    # Save the generated data object
+    save_path = Path(DATA_OBJ_SAVE_DIR) / f"{pocket_name}_{ligand_name}.pt"
+    torch.save(data, save_path)
+
+if __name__ == "__main__":
+    main()
