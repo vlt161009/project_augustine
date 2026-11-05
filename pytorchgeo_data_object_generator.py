@@ -10,6 +10,8 @@ LIG_FILE_PATH = "C:\\augustine\\data\\minimized\\minimized_lig"
 POCKET_FILE_PATH = "C:\\augustine\\data\\minimized\\truncated_pocket"
 DATA_OBJ_SAVE_DIR = "C:\\augustine\\data\\experimental_ligpro_graph_data_obj"
 
+atom_features_tensor = []
+
 # Initialize ligand supplier
 def lig_supplierfunc(file_path):
     for file in Path(file_path).glob("*.sdf"):   
@@ -23,7 +25,6 @@ def lig_supplierfunc(file_path):
         ligand = lig_supplier[0]
         for atom in ligand.GetAtoms():
             atom.SetBoolProp("is_ligand", True)
-        print(f"Found {len(lig_supplier)} molecules in {file}.")
         for mol in lig_supplier:
             if mol is not None:
                 # Fallback to filename stem if _Name prop is missing
@@ -33,118 +34,127 @@ def lig_supplierfunc(file_path):
 # Initialize pocket supplier
 def pocket_supplierfunc(file_path):
     for file in Path(file_path).glob("*.pdb"):
-        pocket_supplier = Chem.rdmolfiles.PDBMolSupplier(
+        pocket = Chem.MolFromPDBFile(
                 str(file),
                 sanitize=True,
-                removeHs=False,
-                strictParsing=True
+                removeHs=False
                 )
-        print(f"Found {len(pocket_supplier)} molecules in {file}.")
-        for mol in pocket_supplier:
-            if mol is not None:
-                # Fallback to filename stem if _Name prop is missing
-                pocket_name = mol.GetProp('_Name') if mol.HasProp('_Name') else file.stem
-                yield pocket_name, mol
+        
+        if pocket is not None:
+            # Fallback to filename stem if _Name prop is missing
+            pocket_name = pocket.GetProp('_Name') if pocket.HasProp('_Name') else file.stem
+            yield pocket_name, pocket
 
 def pocket_ligand_comb(pocket_supplier, lig_supplier):
     for pocket_name, pocket_mol in pocket_supplier:
         for ligand_name, ligand_mol in lig_supplier:
             pocket_mol_obj = Chem.CombineMols(pocket_mol, ligand_mol)
+            print(f"DEBUG: Combined pocket {pocket_name} with ligand {ligand_name}.")
             yield pocket_name, pocket_mol_obj, ligand_name
 
 def generate_node_features_tensor_x(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        obj = pocket_mol_obj
+        print(f"DEBUG: pocket_mol_obj has {obj.GetNumAtoms()} atoms.")
+        # Generate 3D coordinates if not present
+        if obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(obj)
 
-    atom_features_tensor = []
-    # Extract atom features
-    for atom in combined_mol.GetAtoms():
-        atom_features_tensor.append([
-            atom.GetAtomicNum(),
-            atom.GetDegree(),
-            atom.GetFormalCharge(),
-            atom.GetHybridization(),
-            atom.GetIsAromatic()
-        ])
+        # Extract atom features
+        for atom in obj.GetAtoms():
+            atom_features_tensor.append([
+                atom.GetAtomicNum(),
+                atom.GetDegree(),
+                atom.GetFormalCharge(),
+                atom.GetHybridization(),
+                atom.GetIsAromatic()
+            ])
     
-    x = torch.tensor(atom_features_tensor, dtype=torch.float)
-    return x
+        x = torch.tensor(atom_features_tensor, dtype=torch.float)
+        print(f"DEBUG: Generated node features tensor: {x}")
+        return x
 
 def generate_3d_coord_tensor_pos(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    print(f"DEBUG: Function has been called")
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        # Generate 3D coordinates if not present
+        if pocket_mol_obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(pocket_mol_obj)
 
-    pos = []
-    conf = combined_mol.GetConformer()
-    for atom in combined_mol.GetAtoms():
-        pos.append(list(conf.GetAtomPosition(atom.GetIdx())))
-    
-    pos_tensor = torch.tensor(pos, dtype=torch.float)
-    return pos_tensor
+        pos = []
+        conf = pocket_mol_obj.GetConformer()
+        for atom in pocket_mol_obj.GetAtoms():
+            pos.append(list(conf.GetAtomPosition(atom.GetIdx())))
+        
+        pos_tensor = torch.tensor(pos, dtype=torch.float)
+        return pos_tensor
 
 # Draws the edge index tensor for the combined molecules, edges are drawn between atoms that are within 5 angstroms of each other
 def generate_edge_index_tensor_edge_index(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    print(f"DEBUG: Function has been called")
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        # Generate 3D coordinates if not present
+        if pocket_mol_obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(pocket_mol_obj)
 
-    conf = combined_mol.GetConformer()
+        conf = pocket_mol_obj.GetConformer()
 
-    edge_index_tensor = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
+        edge_index_tensor = AllChem.Get3DDistanceMatrix(pocket_mol_obj, confId=conf.GetId())
 
-    edge_index_tensor_torch = torch.tensor(edge_index_tensor, dtype=torch.long).t().contiguous()
-    return edge_index_tensor_torch
+        edge_index_tensor_torch = torch.tensor(edge_index_tensor, dtype=torch.long).t().contiguous()
+        return edge_index_tensor_torch
 
 # We generate the lowest 15 eigenvectors of the distance matrix & return them as a tensor, where each node has a 15-dimensional feature vector.
 def generate_lowest_eigenvector_tensor(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        # Generate 3D coordinates if not present
+        if pocket_mol_obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(pocket_mol_obj)
 
-    conf = combined_mol.GetConformer()
-    distance_matrix = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
-    eigenvalues, eigenvectors = np.linalg.eigh(distance_matrix)
-    lowest_eigenvectors = eigenvectors[:, :15]
-    lowest_eigenvector_tensor = torch.tensor(lowest_eigenvectors, dtype=torch.float)
+        conf = pocket_mol_obj.GetConformer()
+        distance_matrix = AllChem.Get3DDistanceMatrix(pocket_mol_obj, confId=conf.GetId())
+        eigenvalues, eigenvectors = np.linalg.eigh(distance_matrix)
+        lowest_eigenvectors = eigenvectors[:, :15]
+        lowest_eigenvector_tensor = torch.tensor(lowest_eigenvectors, dtype=torch.float)
 
-    return lowest_eigenvector_tensor
+        return lowest_eigenvector_tensor
 
 # Here we generate a tensor that is a boolean mask of each node, defining whether it is part of the ligand or the protein pocket. The ligand atoms are marked as 1, and the protein pocket atoms are marked as 0.
 def generate_graph_mask_tensor(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        # Generate 3D coordinates if not present
+        if pocket_mol_obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(pocket_mol_obj)
 
-    graph_mask = []
+        graph_mask = []
 
-    for atom in combined_mol.GetAtoms():
-        if atom.GetBoolProp("is_ligand"):
-            graph_mask.append(1)
-        else:
-            graph_mask.append(0)
+        for atom in pocket_mol_obj.GetAtoms():
+            if atom.GetBoolProp("is_ligand"):
+                graph_mask.append(1)
+            else:
+                graph_mask.append(0)
 
-    graph_mask_tensor = torch.tensor(graph_mask, dtype=torch.bool)
-    
-    return graph_mask_tensor
+        graph_mask_tensor = torch.tensor(graph_mask, dtype=torch.bool)
+        
+        return graph_mask_tensor
 
 # This function will generate Geometric Scale Tensors, that hold the euclidean distances between each connected node in the graph.
 def generate_geometric_scale_tensor(combined_mol):
-    # Generate 3D coordinates if not present
-    if combined_mol.GetNumConformers() == 0:
-        AllChem.EmbedMolecule(combined_mol)
+    for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
+        # Generate 3D coordinates if not present
+        if pocket_mol_obj.GetNumConformers() == 0:
+            AllChem.EmbedMolecule(pocket_mol_obj)
 
-    conf = combined_mol.GetConformer()
-    distance_matrix = AllChem.Get3DDistanceMatrix(combined_mol, confId=conf.GetId())
-    
-    # Create a sparse matrix to hold the distances
-    sparse_distance_matrix = sp.csr_matrix(distance_matrix)
-    
-    # Convert the sparse matrix to a dense tensor
-    geometric_scale_tensor = torch.tensor(sparse_distance_matrix.todense(), dtype=torch.float)
-    
-    return geometric_scale_tensor
+        conf = pocket_mol_obj.GetConformer()
+        distance_matrix = AllChem.Get3DDistanceMatrix(pocket_mol_obj, confId=conf.GetId())
+        
+        # Create a sparse matrix to hold the distances
+        sparse_distance_matrix = sp.csr_matrix(distance_matrix)
+        
+        # Convert the sparse matrix to a dense tensor
+        geometric_scale_tensor = torch.tensor(sparse_distance_matrix.todense(), dtype=torch.float)
+        
+        return geometric_scale_tensor
 
 # This tensor will hold the regression target values for each target pic50 score for each mprotease(4YLU, 6LU7, 8C9P, 8D4N, 8E25, 8H5P, 9AUK, 9G0H, 23MB).
 def generate_regression_target_tensor(target_values):
@@ -158,30 +168,20 @@ def generate_regression_target_tensor(target_values):
 
 def main():
     lig_supplier = lig_supplierfunc(LIG_FILE_PATH)
+    print(f"{len(list(lig_supplier))} ligands found in {LIG_FILE_PATH}.")
     pocket_supplier = pocket_supplierfunc(POCKET_FILE_PATH)
+    print(f"{len(list(pocket_supplier))} pockets found in {POCKET_FILE_PATH}.")
 
-    for pocket_name, combined_mol, ligand_name in pocket_ligand_comb(pocket_supplier, lig_supplier):
-        x = generate_node_features_tensor_x(combined_mol)
-        pos = generate_3d_coord_tensor_pos(combined_mol)
-        edge_index = generate_edge_index_tensor_edge_index(combined_mol)
-        lowest_eigenvector = generate_lowest_eigenvector_tensor(combined_mol)
-        graph_mask = generate_graph_mask_tensor(combined_mol)
-        geometric_scale = generate_geometric_scale_tensor(combined_mol)
-        y = generate_regression_target_tensor([])  # Placeholder for actual target values
+    x = generate_node_features_tensor_x(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    print(f"DEBUG: Generated node features tensor: {x}")
+    pos = generate_3d_coord_tensor_pos(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    print(f"DEBUG: Generated 3D coordinates tensor: {pos}")
+    edge_index = generate_edge_index_tensor_edge_index(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    lowest_eigenvector = generate_lowest_eigenvector_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    graph_mask = generate_graph_mask_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    geometric_scale = generate_geometric_scale_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
+    y = generate_regression_target_tensor([])  # Placeholder for actual target values
 
-    data = Data(
-        x=x,
-        pos=pos,
-        edge_index=edge_index,
-        lowest_eigenvector=lowest_eigenvector,
-        graph_mask=graph_mask,
-        geometric_scale=geometric_scale,
-        y=y
-    )
-
-    # Save the generated data object
-    save_path = Path(DATA_OBJ_SAVE_DIR) / f"{pocket_name}_{ligand_name}.pt"
-    torch.save(data, save_path)
 
 if __name__ == "__main__":
     main()
