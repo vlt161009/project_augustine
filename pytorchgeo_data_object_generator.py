@@ -22,14 +22,13 @@ def lig_supplierfunc(file_path):
                 strictParsing=True
                 )
         
-        ligand = lig_supplier[0]
-        for atom in ligand.GetAtoms():
-            atom.SetBoolProp("is_ligand", True)
         for mol in lig_supplier:
             if mol is not None:
+                for atom in mol.GetAtoms():
+                    atom.SetBoolProp("is_ligand", True)
                 # Fallback to filename stem if _Name prop is missing
                 ligand_name = mol.GetProp('_Name') if mol.HasProp('_Name') else file.stem
-                yield ligand_name, lig_supplier
+                yield ligand_name, mol
 
 # Initialize pocket supplier
 def pocket_supplierfunc(file_path):
@@ -39,17 +38,18 @@ def pocket_supplierfunc(file_path):
                 sanitize=True,
                 removeHs=False
                 )
-        
         if pocket is not None:
             # Fallback to filename stem if _Name prop is missing
             pocket_name = pocket.GetProp('_Name') if pocket.HasProp('_Name') else file.stem
             yield pocket_name, pocket
 
-def pocket_ligand_comb(pocket_supplier, lig_supplier):
-    for pocket_name, pocket_mol in pocket_supplier:
-        for ligand_name, ligand_mol in lig_supplier:
-            pocket_mol_obj = Chem.CombineMols(pocket_mol, ligand_mol)
-            print(f"DEBUG: Combined pocket {pocket_name} with ligand {ligand_name}.")
+def pocket_ligand_comb(pocket_supplier):
+    for pocket_name, pocket in pocket_supplier:
+        lig_stream = lig_supplierfunc(LIG_FILE_PATH)
+        for ligand_name, ligand_mol in lig_stream:
+            pocket_mol_obj = Chem.CombineMols(pocket, ligand_mol)
+            print(f"pocket_mol is object: {pocket_mol_obj}")
+            print(f"DEBUG: combined is type: {pocket_mol_obj}")
             yield pocket_name, pocket_mol_obj, ligand_name
 
 def generate_node_features_tensor_x(combined_mol):
@@ -71,11 +71,9 @@ def generate_node_features_tensor_x(combined_mol):
             ])
     
         x = torch.tensor(atom_features_tensor, dtype=torch.float)
-        print(f"DEBUG: Generated node features tensor: {x}")
         return x
 
 def generate_3d_coord_tensor_pos(combined_mol):
-    print(f"DEBUG: Function has been called")
     for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
         # Generate 3D coordinates if not present
         if pocket_mol_obj.GetNumConformers() == 0:
@@ -91,7 +89,6 @@ def generate_3d_coord_tensor_pos(combined_mol):
 
 # Draws the edge index tensor for the combined molecules, edges are drawn between atoms that are within 5 angstroms of each other
 def generate_edge_index_tensor_edge_index(combined_mol):
-    print(f"DEBUG: Function has been called")
     for pocket_name, pocket_mol_obj, ligand_name in combined_mol:
         # Generate 3D coordinates if not present
         if pocket_mol_obj.GetNumConformers() == 0:
@@ -129,7 +126,7 @@ def generate_graph_mask_tensor(combined_mol):
         graph_mask = []
 
         for atom in pocket_mol_obj.GetAtoms():
-            if atom.GetBoolProp("is_ligand"):
+            if atom.HasProp("is_ligand"):
                 graph_mask.append(1)
             else:
                 graph_mask.append(0)
@@ -167,20 +164,40 @@ def generate_regression_target_tensor(target_values):
     return regression_target_tensor
 
 def main():
-    lig_supplier = lig_supplierfunc(LIG_FILE_PATH)
-    print(f"{len(list(lig_supplier))} ligands found in {LIG_FILE_PATH}.")
-    pocket_supplier = pocket_supplierfunc(POCKET_FILE_PATH)
-    print(f"{len(list(pocket_supplier))} pockets found in {POCKET_FILE_PATH}.")
+    # File-system pre-count (highly memory efficient alternative to list counting)
+    num_sdf = sum(1 for _ in Path(LIG_FILE_PATH).glob("*.sdf"))
+    num_pdb = sum(1 for _ in Path(POCKET_FILE_PATH).glob("*.pdb"))
+    print(f"Found {num_pdb} PDB files and {num_sdf} SDF files to process.")
 
-    x = generate_node_features_tensor_x(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    print(f"DEBUG: Generated node features tensor: {x}")
-    pos = generate_3d_coord_tensor_pos(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    print(f"DEBUG: Generated 3D coordinates tensor: {pos}")
-    edge_index = generate_edge_index_tensor_edge_index(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    lowest_eigenvector = generate_lowest_eigenvector_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    graph_mask = generate_graph_mask_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    geometric_scale = generate_geometric_scale_tensor(pocket_ligand_comb(pocket_supplier, lig_supplier))
-    y = generate_regression_target_tensor([])  # Placeholder for actual target values
+    # Initialize our end-to-end generator pipeline
+    combined_stream = pocket_ligand_comb(pocket_supplierfunc(POCKET_FILE_PATH))
+    print("Pipeline initialized. Processing streams...")
+
+    # Process everything on-the-fly
+    processed_count = 0
+    for pocket_name, pocket_mol_obj, ligand_name in combined_stream:
+        processed_count += 1
+        
+        print(f"Processing combination {processed_count}: Pocket: {pocket_name}, Ligand: {ligand_name}, object: {pocket_mol_obj}")
+        x = generate_node_features_tensor_x([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"Node features tensor x generated: {x}, with shape: {x.shape}")
+        pos = generate_3d_coord_tensor_pos([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"3D coordinates tensor pos generated: {pos}, with shape: {pos.shape}")
+        edge_index = generate_edge_index_tensor_edge_index([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"Edge index tensor generated: {edge_index}, with shape: {edge_index.shape}")
+        geometric_scale = generate_geometric_scale_tensor([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"Geometric scale tensor generated: {geometric_scale}, with shape: {geometric_scale.shape}")
+        graph_mask = generate_graph_mask_tensor([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"Graph mask tensor generated: {graph_mask}, with shape: {graph_mask.shape}")
+        lowest_eigenvectors = generate_lowest_eigenvector_tensor([(pocket_name, pocket_mol_obj, ligand_name)])
+        print(f"Lowest eigenvectors tensor generated: {lowest_eigenvectors}, with shape: {lowest_eigenvectors.shape}")
+        
+        
+        if processed_count % 100 == 0:
+            print(f"Processed {processed_count} combinations...")
+
+    print(f"Finished! Total combinations processed: {processed_count}")
+        
 
 
 if __name__ == "__main__":
