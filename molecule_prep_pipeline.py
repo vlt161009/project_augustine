@@ -1,6 +1,12 @@
+import os
+from pathlib import Path
+from itertools import islice
+from concurrent.futures import ProcessPoolExecutor
 from rdkit import Chem
-from rdkit.Chem import Descriptors
-from rdkit.Chem import AllChem
+from rdkit.Chem import Descriptors, AllChem, RDLogger
+
+RDLogger.DisableLog('rdApp.*'
+                    )
 
 # main function
 def main():
@@ -27,46 +33,60 @@ def supplierfunc(file_path):
             mol_obj = mol
             yield mol_obj
 
-def lipinskiverify(selected_mols):
+def process_batch(smiles_batch, output_dir, batch_sdf_path=None):
 
-    for mol in selected_mols:
-        current_rdkit_obj = mol
-        global zinc_id
-        zinc_id = current_rdkit_obj.GetProp("_Name")
+    saved_count = 0
+
+    writer = Chem.SDWriter(str(batch_sdf_path)) if batch_sdf_path else None
+
+    for smiles, zinc_id in smiles_batch:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            continue
+
+        mol.SetProp("_Name", zinc_id)
         mol.SetProp("zinc_id", zinc_id)
 
+        # 1. Lipinski Rule of 5 Filter
         Violations = 0
         
-        mw = Descriptors.MolWt(current_rdkit_obj)
-        hbd_amnt = Descriptors.NumHDonors(current_rdkit_obj)
-        hba_amnt = Descriptors.NumHAcceptors(current_rdkit_obj)
-        logp = Descriptors.MolLogP(current_rdkit_obj)
+        mw = Descriptors.MolWt(mol)
+        hbd_amnt = Descriptors.NumHDonors(mol)
+        hba_amnt = Descriptors.NumHAcceptors(mol)
+        logp = Descriptors.MolLogP(mol)
 
         if mw >= 500: Violations +=1
         if hbd_amnt > 5: Violations +=1
         if hba_amnt > 10: Violations +=1
         if logp > 5: Violations +=1
 
-        if Violations <= 1:
-            print(f"{zinc_id} PASSED (Violations: {Violations})")
-            yield current_rdkit_obj
-        else:
-            print(f"{zinc_id} FAILED (Violations: {Violations})")
+        if Violations > 1:
+            continue
 
-def conversionpipeline(screened_mol):
-    for mol in screened_mol:
+        try:
+            Chem.SanitizeMol(mol)      
+            mol_obj_H = Chem.AddHs(mol)
+            mol_obj_H.ClearComputedProps()
+            #Implementation to fix future bug with ring finding during UFF minimization
+            Chem.FastFindRings(mol_obj_H)
+            
+            status = AllChem.EmbedMolecule(mol_obj_H, AllChem.ETKDGv3())
+            if status != 0:
+                continue
 
-        Chem.SanitizeMol(mol)      
-        mol_obj_H = Chem.AddHs(mol)
-        mol_obj_H.ClearComputedProps()
-        #Implementation to fix future bug with ring finding during UFF minimization
-        Chem.FastFindRings(mol_obj_H)
-        status = AllChem.EmbedMolecule(mol_obj_H, AllChem.ETKDGv3())
-        if status == 0:
-            yield mol_obj_H
-        else:
-            zinc_id = mol_obj_H.GetProp("zinc_id") if mol_obj_H.HasProp("zinc_id") else "Unknown"
-            print(f"Skipping 3D embedding failure for {zinc_id}")
+            if writer:
+                writer.write(mol_obj_H)
+            else:
+                out_path = os.path.join(output_dir, f"{zinc_id}.sdf")
+                Chem.MoltoMolFile(mol_obj_H, out_path)
+            saved_count += 1
+        
+        except Exception:
+            continue
+
+    if writer:
+        writer.close()
+    return saved_count
 
 
 def writingmolecule(prepared_mol):
@@ -82,7 +102,5 @@ def writingmolecule(prepared_mol):
 
 if __name__ == "__main__":
     main()
-
-
 
 
