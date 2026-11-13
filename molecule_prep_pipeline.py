@@ -5,33 +5,8 @@ from concurrent.futures import ProcessPoolExecutor
 from rdkit import Chem
 from rdkit.Chem import Descriptors, AllChem, RDLogger
 
-RDLogger.DisableLog('rdApp.*'
-                    )
+RDLogger.DisableLog('rdApp.*')
 
-# main function
-def main():
-    #.smi file path
-    filepath = "C:\\augustine\\data\\ligands\\raw_smiles_ligands\\test_ligands\\smiles_test_script.smi.txt"
-    mol_from_file_path = supplierfunc(filepath)
-    valid_mol = lipinskiverify(mol_from_file_path)
-    converted_mol = conversionpipeline(valid_mol)
-    writingmolecule(converted_mol)
-
-    
-
-def supplierfunc(file_path):
-    supplier = Chem.SmilesMolSupplier(
-            file_path,
-            delimiter = " ",
-            smilesColumn=0,
-            nameColumn=1,
-            titleLine=True,
-            sanitize = True
-            )
-    for mol in supplier:
-        if mol is not None:
-            mol_obj = mol
-            yield mol_obj
 
 def process_batch(smiles_batch, output_dir, batch_sdf_path=None):
 
@@ -88,19 +63,73 @@ def process_batch(smiles_batch, output_dir, batch_sdf_path=None):
         writer.close()
     return saved_count
 
+def stream_smiles_file(smi_path, delimiter=" ", smiles_col=0, name_col=1, has_header=True):
 
-def writingmolecule(prepared_mol):
-    for mol in prepared_mol:
-        zinc_id = mol.GetProp("zinc_id") if mol.HasProp("zinc_id") else "unknown_id"  
+    with open(smi_path, "r", encoding="utf-8", errors="ignore") as f:
+        if has_header:
+            next(f, None)
+        for idx, line in enumerate(f):
+            parts = line.strip().split(delimiter)
+            if len(parts) > max(smiles_col, name_col):
+                yield (parts[smiles_col], parts[name_col])
+            elif len(parts) == 1 and parts[0]:
+                yield (parts[0], f"{smi_path.stem}_mol_{idx}")
 
-        try:
-            out_path = fr"C:\augustine\data\ligands\converted_ligands\{zinc_id}.sdf"
-            Chem.MolToMolFile(mol, out_path)
-            print(f"{zinc_id} has been successfully saved as .sdf!")
-        except Exception as e:
-            print(f"Failed to write file for {zinc_id}: {e}")
+def batched(iterable, chunk_size=1000):
+    iterator = iter(iterable)
+    while chunk := list(islice(iterator, chunk_size)):
+        yield chunk
 
-if __name__ == "__main__":
-    main()
+def run_directory_pipeline(
+        root_input_dir,
+        output_dir,
+        file_pattern="*.smi*",
+        max_workers=None,
+        chunk_size=1000,
+        single_sdf_per_mol=True
+):
+    root_path = Path(root_input_dir)
+    out_path = Path(output_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
 
+    smi_files = sorted(root_path.rglob(file_pattern))
+    print(f"Found {len(smi_files)} SMILES files across subdirectories.")
 
+    workers = max_workers or max(1, (os.cpu_count() or 4) - 2)
+    print(f"Processing using {workers} CPU cores...")
+
+    total_saved = 0
+
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        for file_idx, smi_file in enumerate(smi_files, start=1):
+            futures = []
+            mol_stream = stream_smiles_file(smi_file)
+
+            for batch_idx, batch in enumerate(batched(mol_stream, chunk_size)):
+
+                rel_folder = smi_file.parent.relative_to(root_path)
+                target_folder = out_path / rel_folder
+                target_folder.mkdir(parents=True, exist_ok=True)
+
+                batch_sdf = None
+                if not single_sdf_per_mol:
+                    batch_sdf = target_folder / f"{smi_file.stem}_part{batch_idx}.sdf"
+
+                futures.append(
+                    executor.submit(process_batch, batch, str(target_folder), batch_sdf)
+                )
+
+            batch_sdf = None
+            if not single_sdf_per_mol:
+                batch_sdf = target_folder / f"{smi_file.stem}_part{batch_idx}.sdf"
+
+            futures.append(
+                executor.submit(process_batch, batch, str(target_folder), batch_sdf)
+            )
+
+        file_saved = sum(f.result() for f in futures)
+        total_saved += file_saved
+        print(f"[{file_idx}/{len(smi_files)}] {smi_file.name}: {file_saved} molecules saved.")
+
+    print(f"\nPipeline complete! Total molecules converted: {total_saved}")
+  
